@@ -1,0 +1,43 @@
+[paths]
+raw_data = ".data/raw/lisa"
+processed_data = ".data/processed/lisa_yolo"
+output = ".out"
+
+[dataset]
+kaggle_handle = "mbornoe/lisa-traffic-light-dataset"
+annotation_kind = "BOX"
+train_ratio = 0.70
+validation_ratio = 0.15
+test_ratio = 0.15
+split_seed = 42
+split_attempts = 5000
+materialization = "hardlink" # Falls back to copying when links are unavailable.
+overwrite = true
+
+[training]
+model = "yolo11s.pt"
+image_size = 640
+epochs = 100
+batch = 8
+device = "auto" # CUDA, then Apple MPS, then CPU.
+workers = 4
+seed = 42
+deterministic = true
+patience = 20
+cache = false
+run_name = "lisa_yolo11s_640"
+
+[evaluation]
+weights = "" # Empty uses the best checkpoint from the configured training run.
+device = "auto"
+batch = 8
+workers = 4
+run_name = "lisa_test"
+
+[inference]
+source = "" # Image, directory, or video. Empty uses sample test images.
+sample_count = 12
+confidence = 0.25
+iou = 0.70
+device = "auto"
+run_name = "lisa_predictions"
