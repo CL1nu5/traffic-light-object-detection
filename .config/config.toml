@@ -1,7 +1,7 @@
 [paths]
-raw_data = ".data/raw/lisa"
-processed_data = ".data/processed/lisa_yolo"
-output = ".out"
+raw_data = "data/raw/lisa"
+processed_data = "data/processed/lisa_yolo"
+output = "out"
 
 [dataset]
 kaggle_handle = "mbornoe/lisa-traffic-light-dataset"
@@ -17,7 +17,7 @@ overwrite = true
 [training]
 model = "yolo11s.pt"
 image_size = 640
-epochs = 100
+epochs = 200
 batch = 8
 device = "auto" # CUDA, then Apple MPS, then CPU.
 workers = 4

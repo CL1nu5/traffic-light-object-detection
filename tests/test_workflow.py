@@ -10,6 +10,7 @@ from PIL import Image
 from traffic_light_prediction.classes import CLASS_METADATA, LISA_CLASSES
 from traffic_light_prediction.config import WorkflowConfig, load_config, resolve_device
 from traffic_light_prediction.data import Box, Frame, read_lisa_frames, split_frames, write_yolo_dataset
+from traffic_light_prediction.training import _save_epoch_metrics_csv
 
 
 def _make_image(path: Path, size: tuple[int, int] = (100, 80)) -> None:
@@ -22,9 +23,9 @@ def _config(root: Path) -> WorkflowConfig:
         root=root,
         values={
             "paths": {
-                "raw_data": ".data/raw/lisa",
-                "processed_data": ".data/processed/lisa_yolo",
-                "output": ".out",
+                "raw_data": "data/raw/lisa",
+                "processed_data": "data/processed/lisa_yolo",
+                "output": "out",
             },
             "dataset": {"materialization": "copy", "overwrite": True},
         },
@@ -33,11 +34,25 @@ def _config(root: Path) -> WorkflowConfig:
 
 def test_project_config_and_class_metadata() -> None:
     config = load_config(".config/config.toml")
+    assert config.path("output").name == "out"
     assert config.section("training")["model"] == "yolo11s.pt"
     assert config.section("training")["image_size"] == 640
     assert CLASS_METADATA["stopLeft"] == {"color": "red", "direction": "left"}
     assert len(LISA_CLASSES) == 7
     assert resolve_device("cpu") == "cpu"
+
+
+def test_training_metrics_csv_is_preserved(tmp_path: Path) -> None:
+    run_dir = tmp_path / "out" / "training" / "test_run"
+    run_dir.mkdir(parents=True)
+    results = run_dir / "results.csv"
+    contents = "epoch,train/box_loss,metrics/mAP50(B)\n1,0.5,0.75\n"
+    results.write_text(contents, encoding="utf-8")
+
+    metrics_csv = _save_epoch_metrics_csv(run_dir)
+
+    assert metrics_csv == run_dir / "epoch_metrics.csv"
+    assert metrics_csv.read_text(encoding="utf-8") == contents
 
 
 def test_config_rejects_invalid_ratios(tmp_path: Path) -> None:
@@ -64,7 +79,7 @@ test_ratio = 0.15
 
 
 def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
-    raw = tmp_path / ".data" / "raw" / "lisa"
+    raw = tmp_path / "data" / "raw" / "lisa"
     annotation_file = raw / "Annotations" / "dayTrain" / "frameAnnotationsBOX.csv"
     annotation_file.parent.mkdir(parents=True)
     header = [
@@ -102,7 +117,7 @@ def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
     assert sum(len(items) for items in splits.values()) == 3
 
     summary = write_yolo_dataset(_config(tmp_path), splits, assignment, stats)
-    processed = tmp_path / ".data" / "processed" / "lisa_yolo"
+    processed = tmp_path / "data" / "processed" / "lisa_yolo"
     assert (processed / "dataset.yaml").is_file()
     assert (processed / "manifest.csv").is_file()
     assert sum(item["images"] for item in summary["splits"].values()) == 3

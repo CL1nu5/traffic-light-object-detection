@@ -2,7 +2,7 @@
 
 An end-to-end YOLO11 workflow for detecting LISA traffic lights and classifying their color and arrow direction. It uses three stages: data preparation, training, and evaluation/inference.
 
-The default model is `yolo11s.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `.data/` and `.out/`.
+The default model is `yolo11s.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
 
 ## Setup
 
@@ -30,7 +30,7 @@ uv run traffic-light data-prep
 
 This downloads [`mbornoe/lisa-traffic-light-dataset`](https://www.kaggle.com/datasets/mbornoe/lisa-traffic-light-dataset), uses the `frameAnnotationsBOX.csv` annotations, creates YOLO labels, and assigns complete source videos to splits targeting 70% train, 15% validation, and 15% test. Whole videos are kept together to prevent neighboring frames leaking into evaluation, so the exact percentages depend on video sizes.
 
-If the files are already present in `.data/raw/lisa`, conversion can be rerun without downloading:
+If the files are already present in `data/raw/lisa`, conversion can be rerun without downloading:
 
 ```shell
 uv run traffic-light data-prep --skip-download
@@ -44,7 +44,7 @@ The prepared dataset contains `dataset.yaml`, images and labels for each split, 
 uv run traffic-light train
 ```
 
-The best checkpoint is saved to `.out/training/<run_name>/weights/best.pt`. With `device = "auto"`, training uses NVIDIA CUDA when available, Apple MPS on Apple Silicon, and otherwise CPU.
+The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-epoch losses, precision, recall, mAP, and learning rates are saved to `out/training/<run_name>/epoch_metrics.csv`. With `device = "auto"`, training uses NVIDIA CUDA when available, Apple MPS on Apple Silicon, and otherwise CPU.
 
 ### 3. Evaluate and infer
 
@@ -52,7 +52,7 @@ The best checkpoint is saved to `.out/training/<run_name>/weights/best.pt`. With
 uv run traffic-light evaluate
 ```
 
-This evaluates only on the held-out test split and runs inference on sample test images. Metrics and plots go to `.out/evaluation`; annotated images and structured predictions go to `.out/inference`. Each JSON prediction includes bounding-box coordinates, confidence, original LISA class, color, and direction.
+This evaluates only on the held-out test split and runs inference on sample test images. Metrics and plots go to `out/evaluation`; annotated images and structured predictions go to `out/inference`. Each JSON prediction includes bounding-box coordinates, confidence, original LISA class, color, and direction.
 
 To infer on another image, directory, or video:
 
