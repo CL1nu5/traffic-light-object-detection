@@ -118,6 +118,12 @@ uv run pytest
 
 Tests use a tiny synthetic LISA-shaped dataset; they do not download the full dataset or train a model.
 
+## Credits
+
+The [LISA Traffic Light Dataset](https://vbn.aau.dk/en/datasets/lisa-traffic-light-dataset/) was created by Morten Bornø Jensen and Mark Philip Philipsen, under the supervision of Andreas Møgelmose, Thomas B. Moeslund, and Mohan M. Trivedi. This project downloads the dataset through [Morten Bornø Jensen's Kaggle distribution](https://www.kaggle.com/datasets/mbornoe/lisa-traffic-light-dataset).
+
+When using the dataset or derived model weights, please cite M. B. Jensen, M. P. Philipsen, A. Møgelmose, T. B. Moeslund, and M. M. Trivedi, “[Vision for Looking at Traffic Lights: Issues, Survey, and Perspectives](https://doi.org/10.1109/TITS.2015.2509509),” *IEEE Transactions on Intelligent Transportation Systems*, vol. 17, no. 7, pp. 1800–1815, 2016.
+
 ## Dataset license
 
 The Kaggle mirror identifies LISA as **CC BY-NC-SA 4.0**. Review its attribution, non-commercial, and share-alike requirements before distributing data, trained weights, or derived datasets. Ultralytics is distributed under its own AGPL/commercial licensing terms.
