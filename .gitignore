@@ -16,6 +16,17 @@ data/
 out/
 *.pt
 
+# Keep the trained checkpoints for the published run.
+!out/
+out/*
+!out/training/
+out/training/*
+!out/training/lisa_yolo11n_640/
+out/training/lisa_yolo11n_640/*
+!out/training/lisa_yolo11n_640/weights/
+out/training/lisa_yolo11n_640/weights/*
+!out/training/lisa_yolo11n_640/weights/best.pt
+
 # Notebooks and OS files
 .ipynb_checkpoints/
 .DS_Store

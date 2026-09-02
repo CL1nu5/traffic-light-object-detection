@@ -15,17 +15,17 @@ materialization = "hardlink" # Falls back to copying when links are unavailable.
 overwrite = true
 
 [training]
-model = "yolo11s.pt"
+model = "yolo11n.pt"
 image_size = 640
 epochs = 200
 batch = 8
 device = "auto" # CUDA, then Apple MPS, then CPU.
 workers = 4
 seed = 42
-deterministic = true
+deterministic = false
 patience = 20
 cache = false
-run_name = "lisa_yolo11s_640"
+run_name = "lisa_yolo11n_640"
 
 [evaluation]
 weights = "" # Empty uses the best checkpoint from the configured training run.

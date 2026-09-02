@@ -46,6 +46,14 @@ uv run traffic-light train
 
 The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-epoch losses, precision, recall, mAP, and learning rates are saved to `out/training/<run_name>/epoch_metrics.csv`. With `device = "auto"`, training uses NVIDIA CUDA when available, Apple MPS on Apple Silicon, and otherwise CPU.
 
+Training can be stopped with `Ctrl+C` and resumed from the last completed epoch using Ultralytics' `last.pt` checkpoint:
+
+```shell
+uv run yolo train resume model=out/training/<run_name>/weights/last.pt
+```
+
+Replace `<run_name>` with the configured training run name, such as `lisa_yolo11n_640`. Running `uv run traffic-light train` again starts training from the configured base model instead of resuming the interrupted run.
+
 ### 3. Evaluate and infer
 
 ```shell
