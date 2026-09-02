@@ -1,5 +1,7 @@
 # Traffic-light prediction
 
+[License: CC BY-NC-SA 4.0](LICENSE)
+
 An end-to-end YOLO11 workflow for detecting LISA traffic lights and classifying their color and arrow direction. It uses three stages: data preparation, training, and evaluation/inference.
 
 The default model is `yolo11s.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
@@ -124,6 +126,6 @@ The [LISA Traffic Light Dataset](https://vbn.aau.dk/en/datasets/lisa-traffic-lig
 
 When using the dataset or derived model weights, please cite M. B. Jensen, M. P. Philipsen, A. Møgelmose, T. B. Moeslund, and M. M. Trivedi, “[Vision for Looking at Traffic Lights: Issues, Survey, and Perspectives](https://doi.org/10.1109/TITS.2015.2509509),” *IEEE Transactions on Intelligent Transportation Systems*, vol. 17, no. 7, pp. 1800–1815, 2016.
 
-## Dataset license
+## License
 
-The Kaggle mirror identifies LISA as **CC BY-NC-SA 4.0**. Review its attribution, non-commercial, and share-alike requirements before distributing data, trained weights, or derived datasets. Ultralytics is distributed under its own AGPL/commercial licensing terms.
+This repository, including its distributed dataset-derived model weights, is licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](LICENSE), matching the license identified by the LISA Kaggle distribution. Reuse requires attribution, is limited to non-commercial purposes, and must be shared under the same license. Third-party components retain their own licenses; Ultralytics is distributed under its AGPL/commercial licensing terms.
