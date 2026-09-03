@@ -43,6 +43,8 @@ run_name = "lisa_yolo11n_tiled_640_3class"
 [evaluation]
 weights = "" # Empty uses the best checkpoint from the configured training run.
 confidence = 0.001 # Keep low-confidence detections for the COCO precision/recall curve.
+confusion_confidence = 0.25
+confusion_iou = 0.45
 device = "auto"
 batch = 8
 workers = 4

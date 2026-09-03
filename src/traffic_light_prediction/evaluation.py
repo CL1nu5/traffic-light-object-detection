@@ -8,7 +8,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from .classes import CLASS_METADATA, CLASS_TO_ID
+from .classes import CLASS_METADATA, CLASS_TO_ID, MODEL_CLASSES
 from .config import WorkflowConfig, load_config, resolve_device
 from .data import IMAGE_SUFFIXES
 
@@ -137,6 +137,138 @@ def _full_test_data(config: WorkflowConfig) -> tuple[Path, dict[str, Any]]:
     return path, json.loads(path.read_text(encoding="utf-8"))
 
 
+def _match_predictions(
+    iou: Any, pred_cls: Any, target_cls: Any, thresholds: Any
+) -> Any:
+    """Match detections to targets once per IoU threshold using Ultralytics semantics."""
+
+    import numpy as np
+
+    iou_array = iou.cpu().numpy()
+    pred_array = pred_cls.cpu().numpy()
+    target_array = target_cls.cpu().numpy()
+    correct = np.zeros((len(pred_array), len(thresholds)), dtype=bool)
+    correct_class = target_array[:, None] == pred_array[None, :]
+    for index, threshold in enumerate(thresholds):
+        target_index, prediction_index = np.nonzero(
+            (iou_array >= float(threshold)) & correct_class
+        )
+        if not len(target_index):
+            continue
+        matches = np.column_stack(
+            (target_index, prediction_index, iou_array[target_index, prediction_index])
+        )
+        matches = matches[matches[:, 2].argsort()[::-1]]
+        matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+        matches = matches[matches[:, 2].argsort()[::-1]]
+        matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+        correct[matches[:, 1].astype(int), index] = True
+    return correct
+
+
+def _ultralytics_full_frame_metrics(
+    ground_truth: dict[str, Any],
+    predictions: list[dict[str, Any]],
+    output_dir: Path,
+    *,
+    confusion_confidence: float,
+    confusion_iou: float,
+) -> dict[str, Any]:
+    """Create Ultralytics metrics and plots from stitched full-frame predictions."""
+
+    import numpy as np
+    import torch
+    from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
+
+    names = dict(enumerate(MODEL_CLASSES))
+    metrics = DetMetrics(names=names)
+    confusion = ConfusionMatrix(names=names, task="detect")
+    annotations_by_image: dict[int, list[dict[str, Any]]] = {}
+    predictions_by_image: dict[int, list[dict[str, Any]]] = {}
+    for annotation in ground_truth["annotations"]:
+        annotations_by_image.setdefault(int(annotation["image_id"]), []).append(annotation)
+    for prediction in predictions:
+        predictions_by_image.setdefault(int(prediction["image_id"]), []).append(prediction)
+    thresholds = torch.linspace(0.5, 0.95, 10)
+
+    for image in ground_truth["images"]:
+        image_id = int(image["id"])
+        annotations = annotations_by_image.get(image_id, [])
+        image_predictions = predictions_by_image.get(image_id, [])
+        target_boxes = torch.tensor(
+            [
+                [
+                    item["bbox"][0],
+                    item["bbox"][1],
+                    item["bbox"][0] + item["bbox"][2],
+                    item["bbox"][1] + item["bbox"][3],
+                ]
+                for item in annotations
+            ],
+            dtype=torch.float32,
+        ).reshape(-1, 4)
+        target_cls = torch.tensor(
+            [int(item["category_id"]) - 1 for item in annotations], dtype=torch.float32
+        )
+        prediction_boxes = torch.tensor(
+            [
+                [
+                    item["bbox"][0],
+                    item["bbox"][1],
+                    item["bbox"][0] + item["bbox"][2],
+                    item["bbox"][1] + item["bbox"][3],
+                ]
+                for item in image_predictions
+            ],
+            dtype=torch.float32,
+        ).reshape(-1, 4)
+        prediction_cls = torch.tensor(
+            [int(item["category_id"]) - 1 for item in image_predictions],
+            dtype=torch.float32,
+        )
+        confidence = torch.tensor(
+            [float(item["score"]) for item in image_predictions], dtype=torch.float32
+        )
+        if len(target_boxes) and len(prediction_boxes):
+            true_positive = _match_predictions(
+                box_iou(target_boxes, prediction_boxes),
+                prediction_cls,
+                target_cls,
+                thresholds,
+            )
+        else:
+            true_positive = np.zeros((len(prediction_boxes), len(thresholds)), dtype=bool)
+        metrics.update_stats(
+            {
+                "tp": true_positive,
+                "conf": confidence.numpy(),
+                "pred_cls": prediction_cls.numpy(),
+                "target_cls": target_cls.numpy(),
+                "target_img": np.unique(target_cls.numpy()),
+                "im_name": str(image["file_name"]),
+            }
+        )
+        confusion.process_batch(
+            {"bboxes": prediction_boxes, "conf": confidence, "cls": prediction_cls},
+            {"bboxes": target_boxes, "cls": target_cls},
+            conf=confusion_confidence,
+            iou_thres=confusion_iou,
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics.process(save_dir=output_dir, plot=True)
+    confusion.plot(normalize=True, save_dir=str(output_dir))
+    confusion.plot(normalize=False, save_dir=str(output_dir))
+    return {
+        "overall": metrics.results_dict,
+        "per_class": [
+            {key: _plain(value) for key, value in row.items()}
+            for row in metrics.summary()
+        ],
+        "plots": sorted(path.name for path in output_dir.glob("*.png")),
+    }
+
+
 def _evaluate_full_frames(
     config: WorkflowConfig, detection_model: Any, evaluation_dir: Path
 ) -> dict[str, Any]:
@@ -183,8 +315,17 @@ def _evaluate_full_frames(
         max_detections=100,
         return_dict=True,
     )
+    evaluation = config.section("evaluation")
+    ultralytics_metrics = _ultralytics_full_frame_metrics(
+        ground_truth,
+        predictions,
+        evaluation_dir / "full_frame" / "ultralytics",
+        confusion_confidence=float(evaluation["confusion_confidence"]),
+        confusion_iou=float(evaluation["confusion_iou"]),
+    )
     return {
-        **result["eval_results"],
+        "ultralytics": ultralytics_metrics,
+        "coco": result["eval_results"],
         "ground_truth": str(coco_path),
         "predictions": str(prediction_path),
     }

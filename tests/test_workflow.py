@@ -19,7 +19,7 @@ from traffic_light_prediction.data import (
     tile_frame,
     write_yolo_dataset,
 )
-from traffic_light_prediction.evaluation import _prediction_record
+from traffic_light_prediction.evaluation import _match_predictions, _prediction_record
 from traffic_light_prediction.training import _save_epoch_metrics_csv
 
 
@@ -309,3 +309,16 @@ def test_stitched_prediction_record_uses_full_frame_coordinates() -> None:
     assert record["predictions"][0]["box_xyxy_normalized"] == pytest.approx(
         [0.5, 100 / 960, 680 / 1280, 180 / 960]
     )
+
+
+def test_full_frame_matching_uses_class_and_iou() -> None:
+    import torch
+
+    matched = _match_predictions(
+        torch.tensor([[0.9, 0.8]]),
+        torch.tensor([0.0, 1.0]),
+        torch.tensor([0.0]),
+        torch.tensor([0.5, 0.95]),
+    )
+
+    assert matched.tolist() == [[True, False], [False, False]]

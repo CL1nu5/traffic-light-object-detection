@@ -86,7 +86,7 @@ Replace `<run_name>` with the configured training run name, `lisa_yolo11n_tiled_
 uv run traffic-light evaluate
 ```
 
-This reports Ultralytics metrics on held-out test tiles and stitched COCO metrics on the original test frames, including small-object and per-class results. Inference slices each full-resolution input, merges overlapping predictions, and saves annotated images/videos plus structured JSON under `out/inference`.
+This reports the same Ultralytics precision, recall, mAP, per-class summaries, PR/F1/P/R curves, and confusion matrices for both held-out tiles and stitched original frames. It also reports COCO small-object metrics for the full frames. Inference slices each full-resolution input, merges overlapping predictions, and saves annotated images/videos plus structured JSON under `out/inference`.
 
 To infer on another image, directory, or video:
 
