@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import random
@@ -16,7 +17,13 @@ from typing import Iterable
 from dotenv import load_dotenv
 from PIL import Image
 
-from .classes import CLASS_METADATA, CLASS_TO_ID, LISA_CLASSES
+from .classes import (
+    CLASS_METADATA,
+    CLASS_REMAP,
+    CLASS_TO_ID,
+    LISA_CLASSES,
+    MODEL_CLASSES,
+)
 from .config import WorkflowConfig, load_config
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -47,6 +54,16 @@ class Frame:
     width: int
     height: int
     boxes: list[Box]
+
+
+@dataclass(frozen=True)
+class Tile:
+    frame: Frame
+    x: int
+    y: int
+    size: int
+    boxes: tuple[Box, ...]
+    intersects_ignored_box: bool = False
 
 
 def download_dataset(config: WorkflowConfig, force: bool = False) -> Path:
@@ -135,7 +152,9 @@ def _group_from_path(path: Path, origin: str = "") -> str:
     raise ValueError(f"Could not derive source video group for {path}")
 
 
-def read_lisa_frames(raw_dir: Path, annotation_kind: str = "BOX") -> tuple[list[Frame], dict[str, int]]:
+def read_lisa_frames(
+    raw_dir: Path, annotation_kind: str = "BOX"
+) -> tuple[list[Frame], dict[str, object]]:
     """Read LISA annotations and return every canonical frame, including negatives."""
 
     raw_dir = raw_dir.resolve()
@@ -156,11 +175,11 @@ def read_lisa_frames(raw_dir: Path, annotation_kind: str = "BOX") -> tuple[list[
                     continue
 
                 class_name = row.get("annotationtag", "").strip()
-                if class_name not in CLASS_TO_ID:
+                if class_name not in CLASS_REMAP:
                     raise ValueError(f"Unknown LISA class {class_name!r} in {annotation_file}")
                 try:
                     box = Box(
-                        class_name=class_name,
+                        class_name=CLASS_REMAP[class_name],
                         x1=float(row["upperleftcornerx"]),
                         y1=float(row["upperleftcornery"]),
                         x2=float(row["lowerrightcornerx"]),
@@ -170,6 +189,7 @@ def read_lisa_frames(raw_dir: Path, annotation_kind: str = "BOX") -> tuple[list[
                     raise ValueError(f"Malformed annotation row in {annotation_file}: {source_row}") from exc
 
                 annotations[image].append(box)
+                stats[f"source_class::{class_name}"] += 1
                 annotation_groups[image] = _group_from_path(
                     image, row.get("originfile", "")
                 )
@@ -211,25 +231,29 @@ def read_lisa_frames(raw_dir: Path, annotation_kind: str = "BOX") -> tuple[list[
             f"Could not resolve {stats['unresolved_rows']} annotation rows to images; "
             "the downloaded dataset layout may have changed"
         )
-    return frames, dict(stats)
+    result: dict[str, object] = {
+        key: value for key, value in stats.items() if not key.startswith("source_class::")
+    }
+    result["source_class_instances"] = {
+        name: stats[f"source_class::{name}"] for name in LISA_CLASSES
+    }
+    return frames, result
 
 
 def _assignment_score(
     assignment: dict[str, str],
-    group_frames: dict[str, list[Frame]],
+    group_image_counts: dict[str, int],
+    group_class_counts: dict[str, Counter[str]],
+    class_group_counts: dict[str, int],
     targets: dict[str, float],
 ) -> float:
     split_images: Counter[str] = Counter()
     split_classes: dict[str, Counter[str]] = defaultdict(Counter)
-    class_groups: dict[str, set[str]] = defaultdict(set)
 
-    for group, frames in group_frames.items():
+    for group, image_count in group_image_counts.items():
         split = assignment[group]
-        split_images[split] += len(frames)
-        for frame in frames:
-            split_classes[split].update(box.class_name for box in frame.boxes)
-            for box in frame.boxes:
-                class_groups[box.class_name].add(group)
+        split_images[split] += image_count
+        split_classes[split].update(group_class_counts[group])
 
     total_images = sum(split_images.values())
     score = 10.0 * sum(
@@ -237,14 +261,14 @@ def _assignment_score(
         for split, target in targets.items()
     )
 
-    for class_name in LISA_CLASSES:
+    for class_name in MODEL_CLASSES:
         total = sum(split_classes[split][class_name] for split in targets)
         if total:
             score += sum(
                 abs(split_classes[split][class_name] / total - target)
                 for split, target in targets.items()
             )
-            if len(class_groups[class_name]) >= len(targets):
+            if class_group_counts[class_name] >= len(targets):
                 score += 20.0 * sum(
                     split_classes[split][class_name] == 0 for split in targets
                 )
@@ -272,6 +296,15 @@ def split_frames(
     best_assignment: dict[str, str] | None = None
     best_score = float("inf")
     weights = [targets[name] for name in split_names]
+    group_image_counts = {group: len(items) for group, items in group_frames.items()}
+    group_class_counts = {
+        group: Counter(box.class_name for frame in items for box in frame.boxes)
+        for group, items in group_frames.items()
+    }
+    class_group_counts = {
+        class_name: sum(counts[class_name] > 0 for counts in group_class_counts.values())
+        for class_name in MODEL_CLASSES
+    }
 
     for _ in range(max(1, attempts)):
         assignment = {
@@ -279,7 +312,13 @@ def split_frames(
         }
         if set(assignment.values()) != set(split_names):
             continue
-        score = _assignment_score(assignment, group_frames, targets)
+        score = _assignment_score(
+            assignment,
+            group_image_counts,
+            group_class_counts,
+            class_group_counts,
+            targets,
+        )
         if score < best_score:
             best_score = score
             best_assignment = assignment
@@ -333,48 +372,245 @@ def _yolo_line(box: Box, width: int, height: int) -> str:
     )
 
 
+def _tile_origins(length: int, size: int, overlap_ratio: float) -> list[int]:
+    """Return deterministic, edge-anchored slice origins covering a dimension."""
+
+    if length <= size:
+        return [0]
+    stride = max(1, round(size * (1.0 - overlap_ratio)))
+    final_origin = length - size
+    origins = list(range(0, final_origin + 1, stride))
+    if origins[-1] != final_origin:
+        origins.append(final_origin)
+    return origins
+
+
+def tile_frame(
+    frame: Frame,
+    *,
+    size: int,
+    overlap_ratio: float,
+    min_box_area_ratio: float,
+) -> list[Tile]:
+    """Slice a frame and translate sufficiently visible boxes into tile coordinates."""
+
+    tiles: list[Tile] = []
+    for y in _tile_origins(frame.height, size, overlap_ratio):
+        for x in _tile_origins(frame.width, size, overlap_ratio):
+            boxes: list[Box] = []
+            intersects_ignored_box = False
+            for box in frame.boxes:
+                ix1 = max(box.x1, float(x))
+                iy1 = max(box.y1, float(y))
+                ix2 = min(box.x2, float(x + size))
+                iy2 = min(box.y2, float(y + size))
+                if ix2 <= ix1 or iy2 <= iy1:
+                    continue
+                original_area = (box.x2 - box.x1) * (box.y2 - box.y1)
+                retained_area = (ix2 - ix1) * (iy2 - iy1)
+                if retained_area / original_area < min_box_area_ratio:
+                    intersects_ignored_box = True
+                    continue
+                boxes.append(
+                    Box(
+                        class_name=box.class_name,
+                        x1=ix1 - x,
+                        y1=iy1 - y,
+                        x2=ix2 - x,
+                        y2=iy2 - y,
+                    )
+                )
+            tiles.append(
+                Tile(
+                    frame=frame,
+                    x=x,
+                    y=y,
+                    size=size,
+                    boxes=tuple(boxes),
+                    intersects_ignored_box=intersects_ignored_box,
+                )
+            )
+    return tiles
+
+
+def _tile_name(tile: Tile) -> str:
+    source_stem = Path(_output_name(tile.frame)).stem
+    return f"{source_stem}__x{tile.x:04d}_y{tile.y:04d}.jpg"
+
+
+def _empty_tile_key(tile: Tile, split: str, seed: int) -> str:
+    value = f"{seed}|{split}|{tile.frame.source}|{tile.x}|{tile.y}".encode()
+    return hashlib.sha256(value).hexdigest()
+
+
+def _select_tiles(
+    tiles: list[Tile], *, split: str, seed: int, max_empty_ratio: float
+) -> tuple[list[Tile], dict[str, int]]:
+    positives = [tile for tile in tiles if tile.boxes]
+    empty = [
+        tile for tile in tiles if not tile.boxes and not tile.intersects_ignored_box
+    ]
+    ambiguous = len(tiles) - len(positives) - len(empty)
+    empty_limit = min(len(empty), int(len(positives) * max_empty_ratio))
+    selected_empty = sorted(
+        empty, key=lambda tile: _empty_tile_key(tile, split, seed)
+    )[:empty_limit]
+    selected = sorted(
+        [*positives, *selected_empty],
+        key=lambda tile: (str(tile.frame.source), tile.y, tile.x),
+    )
+    return selected, {
+        "candidate_tiles": len(tiles),
+        "positive_tiles": len(positives),
+        "available_empty_tiles": len(empty),
+        "selected_empty_tiles": len(selected_empty),
+        "dropped_ambiguous_tiles": ambiguous,
+        "selected_tiles": len(selected),
+    }
+
+
+def _save_tile(opened: Image.Image, tile: Tile, destination: Path, quality: int) -> None:
+    crop = opened.crop((tile.x, tile.y, tile.x + tile.size, tile.y + tile.size))
+    if crop.size != (tile.size, tile.size):
+        padded = Image.new("RGB", (tile.size, tile.size), color=(0, 0, 0))
+        padded.paste(crop.convert("RGB"), (0, 0))
+        crop = padded
+    elif crop.mode != "RGB":
+        crop = crop.convert("RGB")
+    crop.save(destination, format="JPEG", quality=quality, subsampling=0)
+
+
+def _write_full_test_artifacts(
+    output_dir: Path, frames: list[Frame], materialization: str
+) -> None:
+    full_dir = output_dir / "full_images" / "test"
+    full_dir.mkdir(parents=True)
+    images: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
+    annotation_id = 1
+    for image_id, frame in enumerate(frames, start=1):
+        name = _output_name(frame)
+        destination = full_dir / name
+        _materialize(frame.source, destination, materialization)
+        images.append(
+            {
+                "id": image_id,
+                "file_name": destination.relative_to(output_dir).as_posix(),
+                "width": frame.width,
+                "height": frame.height,
+                "group": frame.group,
+            }
+        )
+        for box in frame.boxes:
+            width = box.x2 - box.x1
+            height = box.y2 - box.y1
+            annotations.append(
+                {
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": CLASS_TO_ID[box.class_name] + 1,
+                    "bbox": [box.x1, box.y1, width, height],
+                    "area": width * height,
+                    "iscrowd": 0,
+                }
+            )
+            annotation_id += 1
+    coco = {
+        "info": {"description": "LISA full-frame three-class test split"},
+        "licenses": [],
+        "images": images,
+        "annotations": annotations,
+        "categories": [
+            {"id": index + 1, "name": name, "supercategory": "traffic_light"}
+            for index, name in enumerate(MODEL_CLASSES)
+        ],
+    }
+    (output_dir / "full_test_coco.json").write_text(
+        json.dumps(coco, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def write_yolo_dataset(
     config: WorkflowConfig,
     splits: dict[str, list[Frame]],
     assignment: dict[str, str],
-    source_stats: dict[str, int],
+    source_stats: dict[str, object],
+    *,
+    raw_data_action: str = "reused",
 ) -> dict[str, object]:
-    """Materialize YOLO images, labels, metadata, and the dataset YAML."""
+    """Materialize tiled YOLO images, labels, metadata, and full-frame test data."""
 
     output_dir = config.path("processed_data")
     dataset_config = config.section("dataset")
+    tiling = config.section("tiling")
     _safe_reset_directory(output_dir, config.root, bool(dataset_config["overwrite"]))
 
     manifest_rows: list[dict[str, object]] = []
     split_class_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    split_tile_stats: dict[str, dict[str, int]] = {}
     for split, frames in splits.items():
         image_dir = output_dir / "images" / split
         label_dir = output_dir / "labels" / split
         image_dir.mkdir(parents=True)
         label_dir.mkdir(parents=True)
-        used_names: set[str] = set()
-
-        for frame in frames:
-            output_name = _output_name(frame)
-            if output_name in used_names:
-                raise ValueError(f"Duplicate output image name: {output_name}")
-            used_names.add(output_name)
-            output_image = image_dir / output_name
-            _materialize(frame.source, output_image, str(dataset_config["materialization"]))
-
-            label_path = label_dir / f"{Path(output_name).stem}.txt"
-            lines = [_yolo_line(box, frame.width, frame.height) for box in frame.boxes]
-            label_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-            split_class_counts[split].update(box.class_name for box in frame.boxes)
-            manifest_rows.append(
-                {
-                    "split": split,
-                    "group": frame.group,
-                    "source": str(frame.source),
-                    "image": str(output_image.relative_to(output_dir)),
-                    "objects": len(frame.boxes),
-                }
+        all_tiles = [
+            tile
+            for frame in frames
+            for tile in tile_frame(
+                frame,
+                size=int(tiling["size"]),
+                overlap_ratio=float(tiling["overlap_ratio"]),
+                min_box_area_ratio=float(tiling["min_box_area_ratio"]),
             )
+        ]
+        selected, tile_stats = _select_tiles(
+            all_tiles,
+            split=split,
+            seed=int(dataset_config["split_seed"]),
+            max_empty_ratio=float(tiling["max_empty_to_positive_ratio"]),
+        )
+        split_tile_stats[split] = tile_stats
+        print(
+            f"Preparing {split}: {len(frames)} source images -> "
+            f"{len(selected)} selected tiles"
+        )
+        by_source: dict[Path, list[Tile]] = defaultdict(list)
+        for tile in selected:
+            by_source[tile.frame.source].append(tile)
+        used_names: set[str] = set()
+        written = 0
+        for source, source_tiles in by_source.items():
+            with Image.open(source) as opened:
+                for tile in source_tiles:
+                    output_name = _tile_name(tile)
+                    if output_name in used_names:
+                        raise ValueError(f"Duplicate output image name: {output_name}")
+                    used_names.add(output_name)
+                    output_image = image_dir / output_name
+                    _save_tile(opened, tile, output_image, int(tiling["jpeg_quality"]))
+                    label_path = label_dir / f"{Path(output_name).stem}.txt"
+                    lines = [_yolo_line(box, tile.size, tile.size) for box in tile.boxes]
+                    label_path.write_text(
+                        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+                    )
+                    split_class_counts[split].update(box.class_name for box in tile.boxes)
+                    manifest_rows.append(
+                        {
+                            "split": split,
+                            "group": tile.frame.group,
+                            "source": str(tile.frame.source),
+                            "image": output_image.relative_to(output_dir).as_posix(),
+                            "tile_x": tile.x,
+                            "tile_y": tile.y,
+                            "tile_size": tile.size,
+                            "source_width": tile.frame.width,
+                            "source_height": tile.frame.height,
+                            "objects": len(tile.boxes),
+                        }
+                    )
+                    written += 1
+                    if written % 5000 == 0 or written == len(selected):
+                        print(f"  {split}: wrote {written}/{len(selected)} tiles")
 
     yaml_lines = [
         f"path: {output_dir.as_posix()}",
@@ -382,7 +618,7 @@ def write_yolo_dataset(
         "val: images/val",
         "test: images/test",
         "names:",
-        *[f"  {index}: {name}" for index, name in enumerate(LISA_CLASSES)],
+        *[f"  {index}: {name}" for index, name in enumerate(MODEL_CLASSES)],
         "",
     ]
     (output_dir / "dataset.yaml").write_text("\n".join(yaml_lines), encoding="utf-8")
@@ -394,21 +630,32 @@ def write_yolo_dataset(
 
     class_metadata = {
         str(index): {"name": name, **CLASS_METADATA[name]}
-        for index, name in enumerate(LISA_CLASSES)
+        for index, name in enumerate(MODEL_CLASSES)
     }
     (output_dir / "class_metadata.json").write_text(
         json.dumps(class_metadata, indent=2) + "\n", encoding="utf-8"
     )
 
-    total_images = sum(len(frames) for frames in splits.values())
+    _write_full_test_artifacts(
+        output_dir, splits["test"], str(dataset_config["materialization"])
+    )
+    total_source_images = sum(len(frames) for frames in splits.values())
     summary: dict[str, object] = {
-        "source": source_stats,
+        "source": {**source_stats, "raw_data_action": raw_data_action},
+        "class_remap": CLASS_REMAP,
+        "tiling": {
+            "size": int(tiling["size"]),
+            "overlap_ratio": float(tiling["overlap_ratio"]),
+            "min_box_area_ratio": float(tiling["min_box_area_ratio"]),
+            "max_empty_to_positive_ratio": float(tiling["max_empty_to_positive_ratio"]),
+        },
         "splits": {
             split: {
-                "images": len(frames),
-                "ratio": len(frames) / total_images,
+                "source_images": len(frames),
+                "source_ratio": len(frames) / total_source_images,
                 "groups": sorted(group for group, assigned in assignment.items() if assigned == split),
                 "class_instances": dict(split_class_counts[split]),
+                **split_tile_stats[split],
             }
             for split, frames in splits.items()
         },
@@ -429,17 +676,41 @@ def prepare_dataset(
     """Run the complete download, conversion, grouped split, and validation stage."""
 
     config = load_config(config_path)
-    if download:
-        download_dataset(config, force=force_download)
     raw_dir = config.path("raw_data")
+    dataset_config = config.section("dataset")
+    annotation_kind = str(dataset_config["annotation_kind"])
+    raw_data_action = "reused"
+    try:
+        _discover_images(raw_dir)
+        _find_annotation_files(raw_dir, annotation_kind)
+        raw_available = True
+    except FileNotFoundError:
+        raw_available = False
+
+    if force_download:
+        print(f"Force-downloading LISA into {raw_dir}")
+        download_dataset(config, force=True)
+        raw_data_action = "force_downloaded"
+    elif not raw_available:
+        if not download:
+            raise FileNotFoundError(
+                f"Complete LISA images and annotations were not found below {raw_dir}; "
+                "rerun without --skip-download"
+            )
+        print(f"LISA data not found; downloading into {raw_dir}")
+        download_dataset(config)
+        raw_data_action = "downloaded"
+    else:
+        print(f"Reusing existing LISA data in {raw_dir}")
+
     processed_dir = config.path("processed_data")
     if processed_dir == raw_dir or processed_dir in raw_dir.parents:
         raise ValueError(
             "paths.processed_data must not equal or contain paths.raw_data; "
             "preparation replaces the processed directory"
         )
-    dataset_config = config.section("dataset")
-    frames, stats = read_lisa_frames(raw_dir, str(dataset_config["annotation_kind"]))
+    frames, stats = read_lisa_frames(raw_dir, annotation_kind)
+    print(f"Loaded {len(frames)} source frames; computing deterministic video split")
     splits, assignment = split_frames(
         frames,
         (
@@ -450,4 +721,6 @@ def prepare_dataset(
         seed=int(dataset_config["split_seed"]),
         attempts=int(dataset_config["split_attempts"]),
     )
-    return write_yolo_dataset(config, splits, assignment, stats)
+    return write_yolo_dataset(
+        config, splits, assignment, stats, raw_data_action=raw_data_action
+    )

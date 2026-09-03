@@ -3,13 +3,23 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from traffic_light_prediction.classes import CLASS_METADATA, LISA_CLASSES
+from traffic_light_prediction.classes import CLASS_METADATA, CLASS_REMAP, MODEL_CLASSES
 from traffic_light_prediction.config import WorkflowConfig, load_config, resolve_device
-from traffic_light_prediction.data import Box, Frame, read_lisa_frames, split_frames, write_yolo_dataset
+from traffic_light_prediction.data import (
+    Box,
+    Frame,
+    read_lisa_frames,
+    prepare_dataset,
+    split_frames,
+    tile_frame,
+    write_yolo_dataset,
+)
+from traffic_light_prediction.evaluation import _prediction_record
 from traffic_light_prediction.training import _save_epoch_metrics_csv
 
 
@@ -27,7 +37,18 @@ def _config(root: Path) -> WorkflowConfig:
                 "processed_data": "data/processed/lisa_yolo",
                 "output": "out",
             },
-            "dataset": {"materialization": "copy", "overwrite": True},
+            "dataset": {
+                "materialization": "copy",
+                "overwrite": True,
+                "split_seed": 42,
+            },
+            "tiling": {
+                "size": 640,
+                "overlap_ratio": 0.2,
+                "min_box_area_ratio": 0.5,
+                "max_empty_to_positive_ratio": 0.25,
+                "jpeg_quality": 95,
+            },
         },
     )
 
@@ -35,10 +56,11 @@ def _config(root: Path) -> WorkflowConfig:
 def test_project_config_and_class_metadata() -> None:
     config = load_config(".config/config.toml")
     assert config.path("output").name == "out"
-    assert config.section("training")["model"] == "yolo11s.pt"
+    assert config.section("training")["model"] == "yolo11n.pt"
     assert config.section("training")["image_size"] == 640
-    assert CLASS_METADATA["stopLeft"] == {"color": "red", "direction": "left"}
-    assert len(LISA_CLASSES) == 7
+    assert CLASS_METADATA["stop"] == {"color": "red"}
+    assert MODEL_CLASSES == ["go", "warning", "stop"]
+    assert CLASS_REMAP["stopLeft"] == "stop"
     assert resolve_device("cpu") == "cpu"
 
 
@@ -68,6 +90,11 @@ output = "out"
 train_ratio = 0.8
 validation_ratio = 0.15
 test_ratio = 0.15
+[tiling]
+size = 640
+overlap_ratio = 0.2
+min_box_area_ratio = 0.5
+max_empty_to_positive_ratio = 0.25
 [training]
 [evaluation]
 [inference]
@@ -95,11 +122,14 @@ def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
         "Origin track frame number",
     ]
     rows = []
-    for index, group in enumerate(("dayClip1", "dayClip2", "dayClip3"), start=1):
+    classes = ("goLeft", "warningLeft", "stopLeft")
+    for index, (group, class_name) in enumerate(
+        zip(("dayClip1", "dayClip2", "dayClip3"), classes, strict=True), start=1
+    ):
         relative = Path("dayTrain") / group / "frames" / f"{group}--00001.jpg"
         _make_image(raw / relative)
         rows.append(
-            [str(relative), "go", "10", "8", "30", "48", f"{group}.avi", "1", "1", "1"]
+            [str(relative), class_name, "10", "8", "30", "48", f"{group}.avi", "1", "1", "1"]
         )
     with annotation_file.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter=";")
@@ -109,6 +139,7 @@ def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
     frames, stats = read_lisa_frames(raw)
     assert stats["images"] == 3
     assert all(len(frame.boxes) == 1 for frame in frames)
+    assert {frame.boxes[0].class_name for frame in frames} == {"go", "warning", "stop"}
     assert {frame.group for frame in frames} == {"dayclip1", "dayclip2", "dayclip3"}
 
     splits, assignment = split_frames(frames, (0.7, 0.15, 0.15), seed=42, attempts=100)
@@ -120,14 +151,42 @@ def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
     processed = tmp_path / "data" / "processed" / "lisa_yolo"
     assert (processed / "dataset.yaml").is_file()
     assert (processed / "manifest.csv").is_file()
-    assert sum(item["images"] for item in summary["splits"].values()) == 3
+    assert sum(item["selected_tiles"] for item in summary["splits"].values()) == 3
     metadata = json.loads((processed / "class_metadata.json").read_text())
     assert metadata["0"]["color"] == "green"
+    assert len(metadata) == 3
 
     label_files = list((processed / "labels").rglob("*.txt"))
     values = label_files[0].read_text().split()
-    assert values[0] == "0"
-    assert [float(value) for value in values[1:]] == pytest.approx([0.2, 0.35, 0.2, 0.5])
+    assert values[0] in {"0", "1", "2"}
+    assert [float(value) for value in values[1:]] == pytest.approx(
+        [20 / 640, 28 / 640, 20 / 640, 40 / 640]
+    )
+
+
+def test_tiling_covers_edges_and_drops_small_fragments(tmp_path: Path) -> None:
+    image = tmp_path / "frame.jpg"
+    _make_image(image, (1280, 960))
+    frame = Frame(
+        source=image,
+        group="dayclip1",
+        width=1280,
+        height=960,
+        boxes=[Box("stop", 635, 100, 675, 180)],
+    )
+
+    tiles = tile_frame(frame, size=640, overlap_ratio=0.2, min_box_area_ratio=0.5)
+
+    assert {(tile.x, tile.y) for tile in tiles} == {
+        (0, 0),
+        (512, 0),
+        (640, 0),
+        (0, 320),
+        (512, 320),
+        (640, 320),
+    }
+    assert any(tile.boxes and tile.boxes[0].x1 == 123 for tile in tiles)
+    assert any(tile.intersects_ignored_box for tile in tiles)
 
 
 def test_group_never_crosses_splits(tmp_path: Path) -> None:
@@ -152,3 +211,101 @@ def test_group_never_crosses_splits(tmp_path: Path) -> None:
         for frame in split_frames_list:
             assert frame.group not in seen or seen[frame.group] == split
             seen[frame.group] = split
+
+
+def test_prepare_reuses_existing_raw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = tmp_path / "data" / "raw" / "lisa"
+    annotation_file = raw / "Annotations" / "dayTrain" / "frameAnnotationsBOX.csv"
+    annotation_file.parent.mkdir(parents=True)
+    header = [
+        "Filename",
+        "Annotation tag",
+        "Upper left corner X",
+        "Upper left corner Y",
+        "Lower right corner X",
+        "Lower right corner Y",
+        "Origin file",
+    ]
+    rows = []
+    for group in ("dayClip1", "dayClip2", "dayClip3"):
+        relative = Path("dayTrain") / group / "frames" / f"{group}--00001.jpg"
+        _make_image(raw / relative)
+        rows.append([str(relative), "stopLeft", "10", "8", "30", "48", f"{group}.avi"])
+    with annotation_file.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(header)
+        writer.writerows(rows)
+
+    config = tmp_path / ".config" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        """
+[paths]
+raw_data = "data/raw/lisa"
+processed_data = "data/processed/tiled"
+output = "out"
+[dataset]
+kaggle_handle = "example/dataset"
+annotation_kind = "BOX"
+train_ratio = 0.70
+validation_ratio = 0.15
+test_ratio = 0.15
+split_seed = 42
+split_attempts = 100
+materialization = "copy"
+overwrite = true
+[tiling]
+size = 640
+overlap_ratio = 0.2
+min_box_area_ratio = 0.5
+max_empty_to_positive_ratio = 0.25
+jpeg_quality = 95
+inference_batch = 1
+perform_standard_prediction = true
+postprocess_type = "GREEDYNMM"
+postprocess_match_metric = "IOU"
+postprocess_match_threshold = 0.5
+[training]
+image_size = 640
+[evaluation]
+[inference]
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "traffic_light_prediction.data.download_dataset",
+        lambda *_args, **_kwargs: pytest.fail("download should not be called"),
+    )
+    summary = prepare_dataset(config)
+
+    assert summary["source"]["raw_data_action"] == "reused"
+    assert (tmp_path / "data/processed/tiled/dataset.yaml").is_file()
+
+
+def test_stitched_prediction_record_uses_full_frame_coordinates() -> None:
+    class FakeBbox:
+        @staticmethod
+        def to_xyxy() -> list[float]:
+            return [640.0, 100.0, 680.0, 180.0]
+
+    result = SimpleNamespace(
+        object_prediction_list=[
+            SimpleNamespace(
+                category=SimpleNamespace(name="stop"),
+                score=SimpleNamespace(value=0.9),
+                bbox=FakeBbox(),
+            )
+        ]
+    )
+
+    record = _prediction_record(
+        result, source="frame.jpg", width=1280, height=960, frame_index=7
+    )
+
+    assert record["frame_index"] == 7
+    assert record["predictions"][0]["class_id"] == 2
+    assert record["predictions"][0]["color"] == "red"
+    assert record["predictions"][0]["box_xyxy_normalized"] == pytest.approx(
+        [0.5, 100 / 960, 680 / 1280, 180 / 960]
+    )

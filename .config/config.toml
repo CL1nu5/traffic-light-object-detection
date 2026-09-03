@@ -1,6 +1,6 @@
 [paths]
 raw_data = "data/raw/lisa"
-processed_data = "data/processed/lisa_yolo"
+processed_data = "data/processed/lisa_yolo_tiled_3class"
 output = "out"
 
 [dataset]
@@ -14,30 +14,43 @@ split_attempts = 5000
 materialization = "hardlink" # Falls back to copying when links are unavailable.
 overwrite = true
 
+[tiling]
+size = 640
+overlap_ratio = 0.20
+min_box_area_ratio = 0.50
+max_empty_to_positive_ratio = 0.25
+jpeg_quality = 95
+inference_batch = 6
+perform_standard_prediction = true
+postprocess_type = "GREEDYNMM"
+postprocess_match_metric = "IOU"
+postprocess_match_threshold = 0.50
+
 [training]
 model = "yolo11n.pt"
 image_size = 640
 epochs = 200
 batch = 8
+optimizer = "AdamW" # Avoid MuSGD/Muon compatibility issues selected by "auto" on long runs.
 device = "auto" # CUDA, then Apple MPS, then CPU.
 workers = 4
 seed = 42
 deterministic = false
 patience = 20
 cache = false
-run_name = "lisa_yolo11n_640"
+run_name = "lisa_yolo11n_tiled_640_3class"
 
 [evaluation]
 weights = "" # Empty uses the best checkpoint from the configured training run.
+confidence = 0.001 # Keep low-confidence detections for the COCO precision/recall curve.
 device = "auto"
 batch = 8
 workers = 4
-run_name = "lisa_test"
+run_name = "lisa_tiled_test"
 
 [inference]
 source = "" # Image, directory, or video. Empty uses sample test images.
 sample_count = 12
 confidence = 0.25
-iou = 0.70
 device = "auto"
-run_name = "lisa_predictions"
+run_name = "lisa_tiled_predictions"

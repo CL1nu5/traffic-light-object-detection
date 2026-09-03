@@ -2,9 +2,9 @@
 
 [License: CC BY-NC-SA 4.0](LICENSE)
 
-An end-to-end YOLO11 workflow for detecting LISA traffic lights and classifying their color and arrow direction. It uses three stages: data preparation, training, and evaluation/inference.
+An end-to-end YOLO11 workflow for detecting small LISA traffic lights and classifying their state as `go`, `warning`, or `stop`. It uses overlapping image tiles during training and inference so distant lights are not lost when full-resolution frames are resized.
 
-The default model is `yolo11s.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
+The default model is `yolo11n.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
 
 ## Setup
 
@@ -22,6 +22,28 @@ KAGGLE_API_KEY=KGAT_your_token_here
 
 The token is loaded only for the download request and is never printed or copied into project output. `.env` is ignored by Git.
 
+### NVIDIA CUDA on Windows
+
+The cross-platform lockfile may install the CPU-only PyTorch build on Windows. After `uv sync`, replace it with the CUDA build selected for the installed NVIDIA driver:
+
+```powershell
+uv pip install --reinstall torch torchvision --torch-backend=auto
+```
+
+Verify that PyTorch can access the GPU:
+
+```powershell
+uv run --no-sync python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No CUDA GPU')"
+```
+
+The command should report a CUDA version, `True`, and the NVIDIA GPU name. Run every subsequent workflow command with `--no-sync` after this override so UV does not restore the CPU packages from the lockfile:
+
+```powershell
+uv run --no-sync traffic-light train
+```
+
+Running `uv sync` or a plain `uv run` may replace the CUDA build, in which case repeat the CUDA installation command. Dataset download, extraction, and preparation use the CPU and disk; CUDA accelerates training and evaluation.
+
 ## Run the workflow
 
 ### 1. Prepare the data
@@ -30,15 +52,17 @@ The token is loaded only for the download request and is never printed or copied
 uv run traffic-light data-prep
 ```
 
-This downloads [`mbornoe/lisa-traffic-light-dataset`](https://www.kaggle.com/datasets/mbornoe/lisa-traffic-light-dataset), uses the `frameAnnotationsBOX.csv` annotations, creates YOLO labels, and assigns complete source videos to splits targeting 70% train, 15% validation, and 15% test. Whole videos are kept together to prevent neighboring frames leaking into evaluation, so the exact percentages depend on video sizes.
+This reuses a valid dataset already under `data/raw/lisa`, or downloads [`mbornoe/lisa-traffic-light-dataset`](https://www.kaggle.com/datasets/mbornoe/lisa-traffic-light-dataset) when it is missing. It assigns complete source videos to splits targeting 70% train, 15% validation, and 15% test before slicing frames into overlapping 640×640 tiles. Whole videos are kept together to prevent neighboring frames leaking into evaluation, so the exact percentages depend on video sizes.
 
-If the files are already present in `data/raw/lisa`, conversion can be rerun without downloading:
+Normal preparation automatically avoids a second download. For strict offline operation, require the raw files to be present:
 
 ```shell
 uv run traffic-light data-prep --skip-download
 ```
 
-The prepared dataset contains `dataset.yaml`, images and labels for each split, `manifest.csv`, `class_metadata.json`, and `preparation_summary.json`.
+Every preparation run deterministically rebuilds the split and tiles from the configured seed. Change `split_seed` for a different reproducible video-grouped split, or use `--force-download` to explicitly refresh the raw dataset.
+
+The new dataset is written to `data/processed/lisa_yolo_tiled_3class`, leaving older processed datasets untouched. It contains tiled YOLO images and labels, `manifest.csv` with source/tile coordinates, `class_metadata.json`, `preparation_summary.json`, and full-frame COCO test annotations. All positive tiles are kept; truly empty tiles are sampled to limit training time. With the default split this produces about 132,000 training tiles, so an epoch will take longer than full-frame training even though each input is smaller.
 
 ### 2. Train
 
@@ -51,10 +75,10 @@ The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-e
 Training can be stopped with `Ctrl+C` and resumed from the last completed epoch using Ultralytics' `last.pt` checkpoint:
 
 ```shell
-uv run yolo train resume model=out/training/<run_name>/weights/last.pt
+uv run --no-sync yolo train resume model=out/training/<run_name>/weights/last.pt
 ```
 
-Replace `<run_name>` with the configured training run name, such as `lisa_yolo11n_640`. Running `uv run traffic-light train` again starts training from the configured base model instead of resuming the interrupted run.
+Replace `<run_name>` with the configured training run name, `lisa_yolo11n_tiled_640_3class`. Running `traffic-light train` again starts training from the configured base model instead of resuming the interrupted run.
 
 ### 3. Evaluate and infer
 
@@ -62,7 +86,7 @@ Replace `<run_name>` with the configured training run name, such as `lisa_yolo11
 uv run traffic-light evaluate
 ```
 
-This evaluates only on the held-out test split and runs inference on sample test images. Metrics and plots go to `out/evaluation`; annotated images and structured predictions go to `out/inference`. Each JSON prediction includes bounding-box coordinates, confidence, original LISA class, color, and direction.
+This reports Ultralytics metrics on held-out test tiles and stitched COCO metrics on the original test frames, including small-object and per-class results. Inference slices each full-resolution input, merges overlapping predictions, and saves annotated images/videos plus structured JSON under `out/inference`.
 
 To infer on another image, directory, or video:
 
@@ -86,19 +110,15 @@ uv run jupyter lab
 
 ## Classes
 
-LISA supplies seven combined state/direction classes:
+LISA's arrow variants are merged into three state classes:
 
-| LISA class | Color | Direction |
+| Model class | LISA source labels | Color |
 |---|---|---|
-| `go` | green | general |
-| `goForward` | green | forward |
-| `goLeft` | green | left |
-| `warning` | yellow | general |
-| `warningLeft` | yellow | left |
-| `stop` | red | general |
-| `stopLeft` | red | left |
+| `go` | `go`, `goForward`, `goLeft` | green |
+| `warning` | `warning`, `warningLeft` | yellow |
+| `stop` | `stop`, `stopLeft` | red |
 
-The dataset has no right-arrow examples, so this model cannot learn right-arrow recognition without additional annotated data.
+The model intentionally does not predict arrow direction.
 
 ## Configuration
 
@@ -106,9 +126,10 @@ Edit `.config/config.toml` to change:
 
 - data and output locations;
 - dataset split ratios, seed, search attempts, and copy/link behavior;
-- YOLO model size (`yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, etc.);
+- tile size, overlap, retained-box threshold, negative sampling, and merge behavior;
+- YOLO model size (`yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, etc.) and optimizer;
 - image size, epochs, batch size, workers, patience, cache, and device;
-- evaluation checkpoint and inference source/confidence/IoU settings.
+- evaluation checkpoint/metric threshold and inference source/confidence settings.
 
 On a Windows NVIDIA system, install a current NVIDIA driver. The PyTorch dependency selected by UV detects CUDA at runtime. All Python entry points use the Windows-safe `__main__` guard.
 
@@ -118,7 +139,7 @@ On a Windows NVIDIA system, install a current NVIDIA driver. The PyTorch depende
 uv run pytest
 ```
 
-Tests use a tiny synthetic LISA-shaped dataset; they do not download the full dataset or train a model.
+Tests use a tiny synthetic LISA-shaped dataset; they do not download the full dataset, generate all production tiles, or train a model.
 
 ## Credits
 

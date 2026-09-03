@@ -48,6 +48,7 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
         imgsz=int(settings["image_size"]),
         epochs=int(settings["epochs"]),
         batch=int(settings["batch"]),
+        optimizer=str(settings.get("optimizer", "AdamW")),
         device=resolve_device(settings.get("device")),
         workers=int(settings["workers"]),
         seed=int(settings["seed"]),
@@ -65,6 +66,7 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
     summary = {
         "model": str(settings["model"]),
         "image_size": int(settings["image_size"]),
+        "optimizer": str(settings.get("optimizer", "AdamW")),
         "best_weights": str(best_weights),
         "epoch_metrics_csv": str(epoch_metrics_csv),
         "metrics": {

@@ -14,10 +14,11 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare = subparsers.add_parser("data-prep", help="Download and convert LISA")
-    prepare.add_argument(
+    download_group = prepare.add_mutually_exclusive_group()
+    download_group.add_argument(
         "--skip-download", action="store_true", help="Convert an already downloaded dataset"
     )
-    prepare.add_argument(
+    download_group.add_argument(
         "--force-download", action="store_true", help="Redownload the Kaggle dataset"
     )
     subparsers.add_parser("train", help="Train the configured YOLO11 model")
