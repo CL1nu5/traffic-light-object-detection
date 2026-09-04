@@ -17,6 +17,7 @@ from traffic_light_prediction.data import (
     prepare_dataset,
     split_frames,
     tile_frame,
+    validate_yolo_dataset,
     write_yolo_dataset,
 )
 from traffic_light_prediction.evaluation import _match_predictions, _prediction_record
@@ -162,6 +163,30 @@ def test_read_convert_and_grouped_split(tmp_path: Path) -> None:
     assert [float(value) for value in values[1:]] == pytest.approx(
         [20 / 640, 28 / 640, 20 / 640, 40 / 640]
     )
+
+    cache = processed / "labels" / "val.cache"
+    cache.write_bytes(b"stale cache")
+    validation = validate_yolo_dataset(processed, clear_caches=True)
+    assert validation["label_files"] == 3
+    assert validation["instances"] == 3
+    assert validation["removed_caches"] == 1
+    assert not cache.exists()
+
+
+def test_dataset_validation_rejects_old_class_ids(tmp_path: Path) -> None:
+    dataset = tmp_path / "processed"
+    labels = dataset / "labels" / "val"
+    labels.mkdir(parents=True)
+    (dataset / "dataset.yaml").write_text(
+        "path: .\ntrain: images/train\nval: images/val\ntest: images/test\n"
+        "names:\n  0: go\n  1: warning\n  2: stop\n",
+        encoding="utf-8",
+    )
+    bad_label = labels / "old.txt"
+    bad_label.write_text("5 0.5 0.5 0.1 0.2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid class ID '5'"):
+        validate_yolo_dataset(dataset, clear_caches=True)
 
 
 def test_tiling_covers_edges_and_drops_small_fragments(tmp_path: Path) -> None:

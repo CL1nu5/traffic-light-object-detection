@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -528,6 +529,77 @@ def _write_full_test_artifacts(
     (output_dir / "full_test_coco.json").write_text(
         json.dumps(coco, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def validate_yolo_dataset(
+    dataset_dir: Path, *, clear_caches: bool = False
+) -> dict[str, int]:
+    """Validate generated YOLO labels and optionally remove stale label caches."""
+
+    dataset_dir = dataset_dir.resolve()
+    dataset_yaml = dataset_dir / "dataset.yaml"
+    if not dataset_yaml.is_file():
+        raise FileNotFoundError(f"Dataset configuration not found: {dataset_yaml}")
+
+    declared_names = {
+        int(match.group(1)): match.group(2).strip()
+        for match in re.finditer(
+            r"(?m)^\s{2}(\d+):\s*(.+?)\s*$",
+            dataset_yaml.read_text(encoding="utf-8"),
+        )
+    }
+    expected_names = dict(enumerate(MODEL_CLASSES))
+    if declared_names != expected_names:
+        raise ValueError(
+            f"{dataset_yaml} declares classes {declared_names}, expected {expected_names}. "
+            "Re-run data preparation with the current three-class configuration."
+        )
+
+    label_files = sorted((dataset_dir / "labels").glob("*/*.txt"))
+    if not label_files:
+        raise FileNotFoundError(f"No YOLO labels found below {dataset_dir / 'labels'}")
+
+    instances = 0
+    for label_path in label_files:
+        for line_number, line in enumerate(
+            label_path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if not line.strip():
+                continue
+            fields = line.split()
+            location = f"{label_path}:{line_number}"
+            if len(fields) != 5:
+                raise ValueError(f"Invalid YOLO label at {location}: expected 5 fields")
+            try:
+                values = [float(field) for field in fields]
+            except ValueError as exc:
+                raise ValueError(f"Invalid numeric YOLO label at {location}: {line!r}") from exc
+            class_value, center_x, center_y, width, height = values
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(f"Non-finite YOLO label at {location}: {line!r}")
+            class_id = int(class_value)
+            if class_value != class_id or class_id not in expected_names:
+                raise ValueError(
+                    f"Invalid class ID {fields[0]!r} at {location}; expected one of "
+                    f"{sorted(expected_names)}. Re-run data preparation before training."
+                )
+            if not (0 <= center_x <= 1 and 0 <= center_y <= 1):
+                raise ValueError(f"Box center is outside the image at {location}: {line!r}")
+            if not (0 < width <= 1 and 0 < height <= 1):
+                raise ValueError(f"Box size is invalid at {location}: {line!r}")
+            instances += 1
+
+    removed_caches = 0
+    if clear_caches:
+        for cache_path in (dataset_dir / "labels").glob("*.cache"):
+            cache_path.unlink()
+            removed_caches += 1
+
+    return {
+        "label_files": len(label_files),
+        "instances": instances,
+        "removed_caches": removed_caches,
+    }
 
 
 def write_yolo_dataset(

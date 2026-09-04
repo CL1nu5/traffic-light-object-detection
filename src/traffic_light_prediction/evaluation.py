@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 
 from .classes import CLASS_METADATA, CLASS_TO_ID, MODEL_CLASSES
 from .config import WorkflowConfig, load_config, resolve_device
-from .data import IMAGE_SUFFIXES
+from .data import IMAGE_SUFFIXES, validate_yolo_dataset
 
 VIDEO_SUFFIXES = {".avi", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 
@@ -446,6 +446,15 @@ def evaluate_and_infer(
     weights = _weights_path(config)
     if not weights.is_file():
         raise FileNotFoundError(f"Trained weights not found: {weights}")
+
+    dataset_stats = validate_yolo_dataset(
+        config.path("processed_data"), clear_caches=True
+    )
+    print(
+        f"Validated {dataset_stats['label_files']} label files with "
+        f"{dataset_stats['instances']} instances; removed "
+        f"{dataset_stats['removed_caches']} stale label caches"
+    )
 
     output_root = config.path("output")
     evaluation_dir = output_root / "evaluation" / str(evaluation["run_name"])

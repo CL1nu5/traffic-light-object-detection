@@ -72,6 +72,8 @@ uv run traffic-light train
 
 The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-epoch losses, precision, recall, mAP, and learning rates are saved to `out/training/<run_name>/epoch_metrics.csv`. With `device = "auto"`, training uses NVIDIA CUDA when available, Apple MPS on Apple Silicon, and otherwise CPU.
 
+Before Ultralytics starts, the training command validates every generated label against the three configured classes and removes its cached label indexes. This prevents an older seven-class `labels/*.cache` file from silently contaminating a new three-class run. The configured AdamW learning rate and bias warmup are deliberately conservative for fine-tuning; do not remove them when changing model size.
+
 Training can be stopped with `Ctrl+C` and resumed from the last completed epoch using Ultralytics' `last.pt` checkpoint:
 
 ```shell

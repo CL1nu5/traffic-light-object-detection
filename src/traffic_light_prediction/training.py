@@ -8,6 +8,7 @@ from shutil import copyfile
 from typing import Any
 
 from .config import load_config, resolve_device
+from .data import validate_yolo_dataset
 
 
 def _json_value(value: Any) -> Any:
@@ -39,6 +40,14 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
     dataset_yaml = config.path("processed_data") / "dataset.yaml"
     if not dataset_yaml.is_file():
         raise FileNotFoundError(f"Prepared dataset not found: {dataset_yaml}")
+    dataset_stats = validate_yolo_dataset(
+        config.path("processed_data"), clear_caches=True
+    )
+    print(
+        f"Validated {dataset_stats['label_files']} label files with "
+        f"{dataset_stats['instances']} instances; removed "
+        f"{dataset_stats['removed_caches']} stale label caches"
+    )
 
     project = config.path("output") / "training"
     run_name = str(settings["run_name"])
@@ -49,6 +58,9 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
         epochs=int(settings["epochs"]),
         batch=int(settings["batch"]),
         optimizer=str(settings.get("optimizer", "AdamW")),
+        lr0=float(settings.get("lr0", 0.001)),
+        momentum=float(settings.get("momentum", 0.9)),
+        warmup_bias_lr=float(settings.get("warmup_bias_lr", 0.0)),
         device=resolve_device(settings.get("device")),
         workers=int(settings["workers"]),
         seed=int(settings["seed"]),
@@ -67,6 +79,9 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
         "model": str(settings["model"]),
         "image_size": int(settings["image_size"]),
         "optimizer": str(settings.get("optimizer", "AdamW")),
+        "lr0": float(settings.get("lr0", 0.001)),
+        "momentum": float(settings.get("momentum", 0.9)),
+        "warmup_bias_lr": float(settings.get("warmup_bias_lr", 0.0)),
         "best_weights": str(best_weights),
         "epoch_metrics_csv": str(epoch_metrics_csv),
         "metrics": {

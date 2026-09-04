@@ -70,6 +70,14 @@ def load_config(path: str | Path = ".config/config.toml") -> WorkflowConfig:
         raise ValueError("tiling.inference_batch must be positive")
     if int(values["training"].get("image_size", 0)) != int(tiling["size"]):
         raise ValueError("training.image_size must match tiling.size")
+    training = values["training"]
+    if float(training.get("lr0", 0.001)) <= 0:
+        raise ValueError("training.lr0 must be positive")
+    if float(training.get("warmup_bias_lr", 0.0)) < 0:
+        raise ValueError("training.warmup_bias_lr must be non-negative")
+    momentum = float(training.get("momentum", 0.9))
+    if not 0 <= momentum < 1:
+        raise ValueError("training.momentum must be in [0, 1)")
 
     root = config_path.parent.parent
     return WorkflowConfig(root=root, values=values)
