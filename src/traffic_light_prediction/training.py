@@ -1,4 +1,4 @@
-"""YOLO11 training stage."""
+"""Ultralytics YOLO training stage."""
 
 from __future__ import annotations
 
@@ -52,25 +52,43 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
     project = config.path("output") / "training"
     run_name = str(settings["run_name"])
     model = YOLO(str(settings["model"]))
-    results = model.train(
-        data=str(dataset_yaml),
-        imgsz=int(settings["image_size"]),
-        epochs=int(settings["epochs"]),
-        batch=int(settings["batch"]),
-        optimizer=str(settings.get("optimizer", "AdamW")),
-        lr0=float(settings.get("lr0", 0.001)),
-        momentum=float(settings.get("momentum", 0.9)),
-        warmup_bias_lr=float(settings.get("warmup_bias_lr", 0.0)),
-        device=resolve_device(settings.get("device")),
-        workers=int(settings["workers"]),
-        seed=int(settings["seed"]),
-        deterministic=bool(settings["deterministic"]),
-        patience=int(settings["patience"]),
-        cache=settings["cache"],
-        project=str(project),
-        name=run_name,
-        exist_ok=True,
-    )
+    training_args = {
+        "data": str(dataset_yaml),
+        "imgsz": int(settings["image_size"]),
+        "epochs": int(settings["epochs"]),
+        "batch": int(settings["batch"]),
+        "optimizer": str(settings.get("optimizer", "AdamW")),
+        "lr0": float(settings.get("lr0", 0.001)),
+        "lrf": float(settings.get("lrf", 0.01)),
+        "momentum": float(settings.get("momentum", 0.9)),
+        "weight_decay": float(settings.get("weight_decay", 0.0005)),
+        "warmup_epochs": float(settings.get("warmup_epochs", 3.0)),
+        "warmup_bias_lr": float(settings.get("warmup_bias_lr", 0.0)),
+        "cos_lr": bool(settings.get("cos_lr", False)),
+        "box": float(settings.get("box", 7.5)),
+        "cls": float(settings.get("cls", 0.5)),
+        "dfl": float(settings.get("dfl", 1.5)),
+        "cls_pw": float(settings.get("cls_pw", 0.0)),
+        "mosaic": float(settings.get("mosaic", 1.0)),
+        "close_mosaic": int(settings.get("close_mosaic", 10)),
+        "hsv_h": float(settings.get("hsv_h", 0.015)),
+        "hsv_s": float(settings.get("hsv_s", 0.7)),
+        "hsv_v": float(settings.get("hsv_v", 0.4)),
+        "translate": float(settings.get("translate", 0.1)),
+        "scale": float(settings.get("scale", 0.5)),
+        "fliplr": float(settings.get("fliplr", 0.5)),
+        "amp": bool(settings.get("amp", True)),
+        "device": resolve_device(settings.get("device")),
+        "workers": int(settings["workers"]),
+        "seed": int(settings["seed"]),
+        "deterministic": bool(settings["deterministic"]),
+        "patience": int(settings["patience"]),
+        "cache": settings["cache"],
+        "project": str(project),
+        "name": run_name,
+        "exist_ok": True,
+    }
+    results = model.train(**training_args)
 
     run_dir = project / run_name
     best_weights = run_dir / "weights" / "best.pt"
@@ -78,10 +96,9 @@ def train_model(config_path: str | Path = ".config/config.toml") -> Path:
     summary = {
         "model": str(settings["model"]),
         "image_size": int(settings["image_size"]),
-        "optimizer": str(settings.get("optimizer", "AdamW")),
-        "lr0": float(settings.get("lr0", 0.001)),
-        "momentum": float(settings.get("momentum", 0.9)),
-        "warmup_bias_lr": float(settings.get("warmup_bias_lr", 0.0)),
+        "training_args": {
+            key: _json_value(value) for key, value in training_args.items()
+        },
         "best_weights": str(best_weights),
         "epoch_metrics_csv": str(epoch_metrics_csv),
         "metrics": {

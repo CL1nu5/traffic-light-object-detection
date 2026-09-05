@@ -21,7 +21,7 @@ def _parser() -> argparse.ArgumentParser:
     download_group.add_argument(
         "--force-download", action="store_true", help="Redownload the Kaggle dataset"
     )
-    subparsers.add_parser("train", help="Train the configured YOLO11 model")
+    subparsers.add_parser("train", help="Train the configured Ultralytics YOLO model")
     evaluate = subparsers.add_parser("evaluate", help="Evaluate and run inference")
     evaluate.add_argument("--source", help="Optional image, directory, or video input")
     return parser

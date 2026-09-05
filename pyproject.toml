@@ -1,7 +1,7 @@
 [project]
 name = "traffic-light-prediction"
 version = "0.1.0"
-description = "Train and evaluate YOLO11 traffic-light detection on the LISA dataset"
+description = "Train and evaluate Ultralytics YOLO traffic-light detection on the LISA dataset"
 readme = "README.md"
 authors = [
     { name = "Linus Pummer", email = "linus.pummer@web.de" }

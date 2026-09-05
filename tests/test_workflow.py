@@ -57,8 +57,11 @@ def _config(root: Path) -> WorkflowConfig:
 def test_project_config_and_class_metadata() -> None:
     config = load_config(".config/config.toml")
     assert config.path("output").name == "out"
-    assert config.section("training")["model"] == "yolo11n.pt"
+    assert config.section("training")["model"] == "yolo26l.pt"
     assert config.section("training")["image_size"] == 640
+    assert config.section("training")["batch"] == -1
+    assert config.section("training")["mosaic"] == 0.0
+    assert config.section("evaluation")["batch"] == 1
     assert CLASS_METADATA["stop"] == {"color": "red"}
     assert MODEL_CLASSES == ["go", "warning", "stop"]
     assert CLASS_REMAP["stopLeft"] == "stop"

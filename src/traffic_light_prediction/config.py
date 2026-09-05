@@ -71,13 +71,30 @@ def load_config(path: str | Path = ".config/config.toml") -> WorkflowConfig:
     if int(values["training"].get("image_size", 0)) != int(tiling["size"]):
         raise ValueError("training.image_size must match tiling.size")
     training = values["training"]
+    if int(training.get("epochs", 100)) <= 0:
+        raise ValueError("training.epochs must be positive")
+    batch = int(training.get("batch", 16))
+    if batch != -1 and batch <= 0:
+        raise ValueError("training.batch must be -1 for auto-batch or a positive integer")
     if float(training.get("lr0", 0.001)) <= 0:
         raise ValueError("training.lr0 must be positive")
+    if float(training.get("lrf", 0.01)) <= 0:
+        raise ValueError("training.lrf must be positive")
+    if float(training.get("weight_decay", 0.0005)) < 0:
+        raise ValueError("training.weight_decay must be non-negative")
+    if float(training.get("warmup_epochs", 3.0)) < 0:
+        raise ValueError("training.warmup_epochs must be non-negative")
     if float(training.get("warmup_bias_lr", 0.0)) < 0:
         raise ValueError("training.warmup_bias_lr must be non-negative")
     momentum = float(training.get("momentum", 0.9))
     if not 0 <= momentum < 1:
         raise ValueError("training.momentum must be in [0, 1)")
+    if int(training.get("close_mosaic", 10)) < 0:
+        raise ValueError("training.close_mosaic must be non-negative")
+    for name in ("cls_pw", "mosaic", "hsv_h", "hsv_s", "hsv_v", "translate", "scale", "fliplr"):
+        value = float(training.get(name, 0.0))
+        if not 0 <= value <= 1:
+            raise ValueError(f"training.{name} must be in [0, 1]")
 
     root = config_path.parent.parent
     return WorkflowConfig(root=root, values=values)

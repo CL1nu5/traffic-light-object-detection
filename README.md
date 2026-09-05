@@ -2,9 +2,9 @@
 
 [License: CC BY-NC-SA 4.0](LICENSE)
 
-An end-to-end YOLO11 workflow for detecting small LISA traffic lights and classifying their state as `go`, `warning`, or `stop`. It uses overlapping image tiles during training and inference so distant lights are not lost when full-resolution frames are resized.
+An end-to-end Ultralytics YOLO workflow for detecting small LISA traffic lights and classifying their state as `go`, `warning`, or `stop`. It uses overlapping image tiles during training and inference so distant lights are not lost when full-resolution frames are resized.
 
-The default model is `yolo11n.pt` at 640 px. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
+The default model is the pretrained `yolo26l.pt` at 640 px. Its training batch is fitted automatically to the available CUDA memory, while validation and sliced inference use batch 1 so the complete workflow fits an 8 GB RTX 3060 Ti. Runtime settings live in [`.config/config.toml`](.config/config.toml); generated data and model artifacts stay in `data/` and `out/`.
 
 ## Setup
 
@@ -49,7 +49,7 @@ Running `uv sync` or a plain `uv run` may replace the CUDA build, in which case 
 ### 1. Prepare the data
 
 ```shell
-uv run traffic-light data-prep
+uv run --no-sync traffic-light data-prep
 ```
 
 This reuses a valid dataset already under `data/raw/lisa`, or downloads [`mbornoe/lisa-traffic-light-dataset`](https://www.kaggle.com/datasets/mbornoe/lisa-traffic-light-dataset) when it is missing. It assigns complete source videos to splits targeting 70% train, 15% validation, and 15% test before slicing frames into overlapping 640×640 tiles. Whole videos are kept together to prevent neighboring frames leaking into evaluation, so the exact percentages depend on video sizes.
@@ -57,7 +57,7 @@ This reuses a valid dataset already under `data/raw/lisa`, or downloads [`mborno
 Normal preparation automatically avoids a second download. For strict offline operation, require the raw files to be present:
 
 ```shell
-uv run traffic-light data-prep --skip-download
+uv run --no-sync traffic-light data-prep --skip-download
 ```
 
 Every preparation run deterministically rebuilds the split and tiles from the configured seed. Change `split_seed` for a different reproducible video-grouped split, or use `--force-download` to explicitly refresh the raw dataset.
@@ -67,12 +67,14 @@ The new dataset is written to `data/processed/lisa_yolo_tiled_3class`, leaving o
 ### 2. Train
 
 ```shell
-uv run traffic-light train
+uv run --no-sync traffic-light train
 ```
 
-The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-epoch losses, precision, recall, mAP, and learning rates are saved to `out/training/<run_name>/epoch_metrics.csv`. With `device = "auto"`, training uses NVIDIA CUDA when available, Apple MPS on Apple Silicon, and otherwise CPU.
+The best checkpoint is saved to `out/training/<run_name>/weights/best.pt`. Per-epoch losses, precision, recall, mAP, and learning rates are saved to `out/training/<run_name>/epoch_metrics.csv`. The production configuration uses `device = 0` so it fails clearly instead of silently attempting YOLO26l training on the CPU when the CUDA PyTorch build is missing. `batch = -1` profiles the model and selects a physical batch targeting about 60% GPU-memory use.
 
-Before Ultralytics starts, the training command validates every generated label against the three configured classes and removes its cached label indexes. This prevents an older seven-class `labels/*.cache` file from silently contaminating a new three-class run. The configured AdamW learning rate and bias warmup are deliberately conservative for fine-tuning; do not remove them when changing model size.
+Before Ultralytics starts, the training command validates every generated label against the three configured classes and removes its cached label indexes. This prevents an older seven-class `labels/*.cache` file from silently contaminating a new three-class run. The YOLO26l recipe uses a conservative AdamW learning rate, one warmup epoch, mild color/geometry transforms, no mosaic, and mild class weighting for the rare `warning` state.
+
+The first training launch downloads the pretrained `yolo26l.pt` weights if they are not already present. YOLO26l is substantially slower than YOLO11n on a 3060 Ti; each epoch traverses about 132,000 tiles, so verify the first epoch's duration before committing to the complete run.
 
 Training can be stopped with `Ctrl+C` and resumed from the last completed epoch using Ultralytics' `last.pt` checkpoint:
 
@@ -80,12 +82,12 @@ Training can be stopped with `Ctrl+C` and resumed from the last completed epoch 
 uv run --no-sync yolo train resume model=out/training/<run_name>/weights/last.pt
 ```
 
-Replace `<run_name>` with the configured training run name, `lisa_yolo11n_tiled_640_3class`. Running `traffic-light train` again starts training from the configured base model instead of resuming the interrupted run.
+Replace `<run_name>` with the configured training run name, `lisa_yolo26l_tiled_640_3class`. Running `traffic-light train` again starts training from the configured base model instead of resuming the interrupted run.
 
 ### 3. Evaluate and infer
 
 ```shell
-uv run traffic-light evaluate
+uv run --no-sync traffic-light evaluate
 ```
 
 This reports the same Ultralytics precision, recall, mAP, per-class summaries, PR/F1/P/R curves, and confusion matrices for both held-out tiles and stitched original frames. It also reports COCO small-object metrics for the full frames. Inference slices each full-resolution input, merges overlapping predictions, and saves annotated images/videos plus structured JSON under `out/inference`.
@@ -93,7 +95,7 @@ This reports the same Ultralytics precision, recall, mAP, per-class summaries, P
 To infer on another image, directory, or video:
 
 ```shell
-uv run traffic-light evaluate --source path/to/input
+uv run --no-sync traffic-light evaluate --source path/to/input
 ```
 
 ## Notebooks
@@ -107,7 +109,7 @@ The notebooks are intentionally thin and call the same tested Python modules as 
 Start Jupyter with the UV environment:
 
 ```shell
-uv run jupyter lab
+uv run --no-sync jupyter lab
 ```
 
 ## Classes
@@ -129,8 +131,8 @@ Edit `.config/config.toml` to change:
 - data and output locations;
 - dataset split ratios, seed, search attempts, and copy/link behavior;
 - tile size, overlap, retained-box threshold, negative sampling, and merge behavior;
-- YOLO model size (`yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, etc.) and optimizer;
-- image size, epochs, batch size, workers, patience, cache, and device;
+- YOLO model checkpoint (`yolo26l.pt` by default), optimizer, learning-rate schedule, and loss weights;
+- image size, automatic/fixed batch size, augmentations, workers, patience, cache, and device;
 - evaluation checkpoint/metric threshold and inference source/confidence settings.
 
 On a Windows NVIDIA system, install a current NVIDIA driver. The PyTorch dependency selected by UV detects CUDA at runtime. All Python entry points use the Windows-safe `__main__` guard.
@@ -138,7 +140,7 @@ On a Windows NVIDIA system, install a current NVIDIA driver. The PyTorch depende
 ## Tests
 
 ```shell
-uv run pytest
+uv run --no-sync pytest
 ```
 
 Tests use a tiny synthetic LISA-shaped dataset; they do not download the full dataset, generate all production tiles, or train a model.
